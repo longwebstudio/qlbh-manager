@@ -1,281 +1,134 @@
 <?php
 /**
  * File: admin/class-qlbh-admin.php
- * Chức năng: Quản lý menu quản trị, định tuyến tải giao diện và nhúng stylesheet bổ trợ.
+ * Chức năng: Điều hướng Admin, Quản lý Assets và Xử lý AJAX
  */
 
-if ( ! defined( 'ABSPATH' ) ) {
-    exit;
-}
+if (!defined('ABSPATH')) exit;
 
 class QLBH_Admin {
 
-    // Khởi tạo các hook đăng ký menu và tải asset
     public static function init() {
-        add_action( 'admin_menu', array( __CLASS__, 'register_menus' ) );
-        add_action( 'admin_head', array( __CLASS__, 'enqueue_styles' ) );
-    }
-
-    // Đăng ký Menu chính và các phân hệ nghiệp vụ con chuyên biệt
-    public static function register_menus() {
-        // Menu chính - Tải trang Danh sách khách hàng tập trung
-        add_menu_page(
-            'Quản lý Thu Bảo hiểm',
-            'Quản lý Bảo hiểm',
-            'manage_options',
-            'qlbh-manager',
-            array( __CLASS__, 'load_view_list' ),
-            'dashicons-id-alt',
-            25
-        );
+        // Đăng ký Menu Sidebar
+        add_action('admin_menu', [__CLASS__, 'register_menus']);
         
-        // Menu con 1: Danh sách khách hàng (Trùng slug menu chính để hiển thị làm tab mặc định)
-        add_submenu_page(
-            'qlbh-manager',
-            'Danh sách khách hàng',
-            'Danh sách',
-            'manage_options',
-            'qlbh-manager',
-            array( __CLASS__, 'load_view_list' )
-        );
+        // Nhúng CSS và JavaScript vào Header
+        add_action('admin_head', [__CLASS__, 'enqueue_custom_assets']);
+        
+        // Đăng ký các cổng xử lý AJAX
+        add_action('wp_ajax_qlbh_update_status', [__CLASS__, 'ajax_update_status']);
+        add_action('wp_ajax_qlbh_update_note', [__CLASS__, 'ajax_update_note']);
 
-        // Menu con 2: Đăng ký hồ sơ khách hàng mới
-        add_submenu_page(
-            'qlbh-manager',
-            'Thêm Khách hàng',
-            'Thêm Khách hàng',
-            'manage_options',
-            'qlbh-add-customer',
-            array( __CLASS__, 'load_view_add_edit' )
-        );
-
-        // Menu con 3: Nghiệp vụ thu Bảo hiểm Y tế (BHYT)
-        add_submenu_page(
-            'qlbh-manager',
-            'Nghiệp vụ Thu BHYT',
-            'Thu BHYT',
-            'manage_options',
-            'qlbh-thu-bhyt',
-            array( __CLASS__, 'load_view_bhyt_op' )
-        );
-
-        // Menu con 4: Nghiệp vụ thu Bảo hiểm Xã hội (BHXH) tự nguyện
-        add_submenu_page(
-            'qlbh-manager',
-            'Nghiệp vụ Thu BHXH',
-            'Thu BHXH',
-            'manage_options',
-            'qlbh-thu-bhxh',
-            array( __CLASS__, 'load_view_bhxh_op' )
-        );
-
-        // Menu con 5: Nghiệp vụ thu Bảo hiểm MIC đính kèm
-        add_submenu_page(
-            'qlbh-manager',
-            'Nghiệp vụ Thu MIC',
-            'Thu MIC',
-            'manage_options',
-            'qlbh-thu-mic',
-            array( __CLASS__, 'load_view_mic_op' )
-        );
-
-        // Menu con 6: Phân hệ Quản lý Tờ khai BHYT (Hộ gia đình / Tờ khai riêng)
-        add_submenu_page(
-            'qlbh-manager',
-            'Quản lý Tờ khai BHYT',
-            'Quản lý Tờ khai',
-            'manage_options',
-            'qlbh-tokhai',
-            array( __CLASS__, 'load_view_tokhai' )
-        );
-
-        // Đăng ký menu con Quản lý Danh sách Tái tục
-        add_submenu_page(
-            'qlbh-manager',
-            'Danh sách Tái tục',
-            'Danh sách Tái tục',
-            'manage_options',
-            'qlbh-tai-tuc',
-            array( __CLASS__, 'load_view_tai_tuc' )
-        );
-
-        // Menu con 7: Đồng bộ dữ liệu JSON từ cổng BHXH
-        add_submenu_page(
-            'qlbh-manager',
-            'Nhập dữ liệu từ JSON',
-            'Import JSON',
-            'manage_options',
-            'qlbh-import',
-            array( __CLASS__, 'load_view_import' )
-        );
-
-        // Thêm vào hàm register_menus()
-add_submenu_page(
-    'qlbh-manager',
-    'Cấu hình hệ thống',
-    'Cấu hình',
-    'manage_options',
-    'qlbh-settings',
-    array( __CLASS__, 'load_view_settings' )
-);
+        // Xử lý yêu cầu xuất file báo cáo
+        add_action('admin_init', [__CLASS__, 'handle_export_request']);
     }
 
+    public static function register_menus() {
+        $cap = 'manage_options';
+        $slug = 'qlbh-manager';
 
-// Thêm hàm load view
-public static function load_view_settings() {
-    include QLBH_PATH . 'admin/views/settings.php';
-}
-    // --- Các hàm định tuyến tải View từ thư mục admin/views/ ---
-
-    public static function load_view_list() {
-        include QLBH_PATH . 'admin/views/list.php';
+        add_menu_page('Quản lý Bảo hiểm', 'Quản lý Bảo hiểm', $cap, $slug, [__CLASS__, 'view_list'], 'dashicons-shield', 25);
+        add_submenu_page($slug, 'Danh sách', 'Danh sách BHYT', $cap, $slug, [__CLASS__, 'view_list']);
+        add_submenu_page($slug, 'Thêm mới', 'Thêm hồ sơ mới', $cap, 'qlbh-add', [__CLASS__, 'view_add_edit']);
+        add_submenu_page($slug, 'Tái tục', 'Danh sách Tái tục', $cap, 'qlbh-renewal', [__CLASS__, 'view_renewal']);
+        add_submenu_page($slug, 'Tờ khai', 'Lập Tờ khai HGĐ', $cap, 'qlbh-tokhai', [__CLASS__, 'view_tokhai']);
+        add_submenu_page($slug, 'Phê duyệt', 'Phê duyệt BHYT', $cap, 'qlbh-op-bhyt', [__CLASS__, 'view_op_bhyt']);
+        add_submenu_page($slug, 'Import JSON', 'Import dữ liệu', $cap, 'qlbh-import', [__CLASS__, 'view_import']);
+        add_submenu_page($slug, 'Báo cáo', 'Xuất Báo cáo', $cap, 'qlbh-reports', [__CLASS__, 'view_reports']);
+        add_submenu_page($slug, 'Hướng dẫn', 'Hướng dẫn Đồng bộ', $cap, 'qlbh-guide', [__CLASS__, 'view_guide']);
+        add_submenu_page($slug, 'Cấu hình', 'Cấu hình hệ thống', $cap, 'qlbh-settings', [__CLASS__, 'view_settings']);
     }
 
-    public static function load_view_add_edit() {
-        include QLBH_PATH . 'admin/views/add-edit.php';
-    }
+    public static function view_list() { include QLBH_PATH . 'admin/views/list.php'; }
+    public static function view_add_edit() { include QLBH_PATH . 'admin/views/add-edit.php'; }
+    public static function view_tokhai() { include QLBH_PATH . 'admin/views/quan-ly-tokhai.php'; }
+    public static function view_renewal() { include QLBH_PATH . 'admin/views/renewal.php'; }
+    public static function view_op_bhyt() { include QLBH_PATH . 'admin/views/bhyt-op.php'; }
+    public static function view_import() { include QLBH_PATH . 'admin/views/import.php'; }
+    public static function view_reports() { include QLBH_PATH . 'admin/views/reports.php'; }
+    public static function view_guide() { include QLBH_PATH . 'admin/views/guide.php'; }
+    public static function view_settings() { include QLBH_PATH . 'admin/views/settings.php'; }
 
-    public static function load_view_bhyt_op() {
-        include QLBH_PATH . 'admin/views/bhyt-operation.php';
-    }
-
-    public static function load_view_bhxh_op() {
-        include QLBH_PATH . 'admin/views/bhxh-operation.php';
-    }
-
-    public static function load_view_mic_op() {
-        include QLBH_PATH . 'admin/views/mic-operation.php';
-    }
-
-    public static function load_view_tokhai() {
-        include QLBH_PATH . 'admin/views/quan-ly-tokhai.php';
-    }
-
-    public static function load_view_import() {
-        include QLBH_PATH . 'admin/views/import.php';
-    }
-
-    public static function load_view_tai_tuc() {
-        include QLBH_PATH . 'admin/views/tai-tuc.php';
-    }
-
-    // --- Stylesheet nhúng trực tiếp để chuẩn hóa hiển thị và tăng trải nghiệm người dùng ---
-    public static function enqueue_styles() {
-        // Chỉ nạp style khi đang đứng tại các trang thuộc quyền quản lý của plugin
-        $current_page = isset( $_GET['page'] ) ? $_GET['page'] : '';
-        if ( strpos( $current_page, 'qlbh-' ) === false && $current_page !== 'qlbh-manager' ) {
-            return;
+    public static function handle_export_request() {
+        if (isset($_GET['action']) && $_GET['action'] === 'qlbh_export_csv') {
+            require_once QLBH_PATH . 'includes/helpers/export.php';
+            qlbh_process_csv_export();
         }
+    }
+
+    public static function enqueue_custom_assets() {
+        $screen = get_current_screen();
+        if (strpos($screen->id, 'qlbh-') === false && strpos($screen->id, 'qlbh-manager') === false) return;
         ?>
         <style>
-            .qlbh-wrap { margin: 20px 20px 0 0; }
-            .qlbh-card { background: #fff; padding: 20px; border: 1px solid #ccd0d4; box-shadow: 0 1px 1px rgba(0,0,0,.04); border-radius: 4px; margin-top: 15px; }
-            .qlbh-form-container { background: #fff; padding: 20px; border: 1px solid #ccd0d4; box-shadow: 0 1px 1px rgba(0,0,0,.04); margin-top: 15px; border-radius: 4px; }
-            
-            /* Styles bảng dữ liệu */
-            .customer-table th { font-weight: bold !important; background: #f8f9fa; }
-            .row-info { font-size: 12px; color: #50575e; margin-top: 3px; }
-            .text-date { color: #d54e21; font-weight: 500; }
-            .text-warn { color: #46b450; font-weight: bold; }
-            .code-highlight { background: #e7f4f9; padding: 2px 5px; border-radius: 3px; border: 1px solid #b4e0f1; color: #0073aa; font-family: monospace; }
-            .quick-act-links { margin-top: 5px; font-size: 11px; }
-            .quick-act-links a { text-decoration: none; font-weight: 500; margin-right: 5px; }
-            
-            /* Nhãn trạng thái Bảo hiểm (Badges) */
-            .bh-badge { display: inline-block; padding: 3px 6px; font-size: 11px; font-weight: bold; border-radius: 3px; color: #fff; margin-bottom: 5px; }
+            .qlbh-wrap { margin-top: 20px; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Oxygen-Sans,Ubuntu,Cantarell,"Helvetica Neue",sans-serif; }
+            .qlbh-card { background: #fff; border: 1px solid #ccd0d4; padding: 15px; border-radius: 4px; box-shadow: 0 1px 1px rgba(0,0,0,.04); }
+            .code-highlight { background: #e7f4f9; padding: 2px 5px; border-radius: 3px; border: 1px solid #b4e0f1; color: #0073aa; font-family: monospace; font-size: 12px; }
+            .bh-badge { display: inline-block; padding: 2px 6px; border-radius: 3px; color: #fff; font-size: 10px; font-weight: bold; text-transform: uppercase; }
             .bh-badge-y { background: #0073aa; }
-            .bh-badge-x { background: #11a0d2; }
-            .bh-badge-m { background: #f3b200; color: #32373c; }
-            .bh-badge-none { background: #ccd0d4; color: #50575e; }
+            .row-info { display: flex; align-items: center; gap: 5px; margin-bottom: 3px; }
             
-            /* Gom nhóm trực quan */
-            .group-header-row { background: #f0f6fc !important; border-left: 4px solid #11a0d2; }
-            .group-header-row td { padding: 10px 15px !important; color: #1d2327; font-size: 13px; font-weight: bold; }
-            .qlbh-filter-badge { background: #fff; border: 1px solid #ccd0d4; padding: 4px 10px; border-radius: 4px; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
-            .qlbh-filter-badge a { color: #d54e21; font-weight: bold; text-decoration: none; font-size: 14px; margin-left: 3px; }
-            .qlbh-filter-badge a:hover { color: #dc3232; }
+            /* TRẠNG THÁI MÀU DÒNG (CamelCase Logic) */
+            /* 1. HẾT HẠN: Màu tối mạnh mẽ */
+            .qlbh-row-expired td { background-color: #32373c !important; color: #f0f0f1 !important; border-bottom: 1px solid #1d2327 !important; }
+            .qlbh-row-expired strong { color: #fff !important; }
+            .qlbh-row-expired b { color: #ff8a80 !important; }
+            .qlbh-row-expired a { color: #72aee6 !important; }
+            .qlbh-row-expired .code-highlight { background: #1d2327; color: #fff; border-color: #444; }
+            .qlbh-row-expired .dashicons { color: #a7aaad !important; }
 
-            /* Tab Điều hướng */
-            .tab-content { display: none; margin-top: 15px; }
-            .tab-content.current { display: block; }
+            /* 2. ƯU TIÊN (Mã khác GD): Màu vàng */
+            .qlbh-row-priority td { background-color: #fff9c4 !important; color: #5d4037 !important; }
 
-            /* Phân trang */
-            .tablenav-pages .pagination-links a, 
-            .tablenav-pages .pagination-links .current {
-                display: inline-block;
-                padding: 4px 10px;
-                background: #fff;
-                border: 1px solid #ccc;
-                text-decoration: none;
-                color: #2271b1;
-                font-weight: 500;
-                border-radius: 3px;
-                font-size: 13px;
-            }
-            .tablenav-pages .pagination-links .current {
-                background: #2271b1;
-                color: #fff;
-                border-color: #2271b1;
-            }
-            .row-info {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    margin-bottom: 2px;
-    line-height: 1.4;
-}
-.row-info .dashicons {
-    color: #8c8f94;
-}
-.customer-table td {
-    vertical-align: top !important; /* Đảm bảo dữ liệu căn trên cùng */
-    padding: 10px 8px !important;
-}
+            /* 3. CÒN HẠN DÀI: Màu xanh lá */
+            .qlbh-row-long-term td { background-color: #d1e7dd !important; color: #0f5132 !important; }
 
- /* 1. Thẻ đã HẾT HẠN: Màu TỐI (Dark Mode) - Ưu tiên cao nhất */
-    .qlbh-row-expired td { 
-        background-color: #32373c !important; /* Màu xám đen của admin WordPress */
-        color: #f0f0f1 !important; /* Chữ trắng xám */
-        border-bottom: 1px solid #1d2327 !important;
-    }
-    /* Chỉnh lại màu các thẻ con bên trong dòng tối */
-    .qlbh-row-expired strong { color: #fff !important; }
-    .qlbh-row-expired b { color: #ff8a80 !important; } /* Ngày hết hạn hiện màu đỏ sáng cho nổi trên nền tối */
-    .qlbh-row-expired a { color: #72aee6 !important; } /* Link màu xanh sáng */
-    .qlbh-row-expired .code-highlight { 
-        background: #1d2327 !important; 
-        color: #fff !important; 
-        border-color: #4f5459 !important; 
-    }
-    .qlbh-row-expired .dashicons { color: #a7aaad !important; }
-    .qlbh-row-expired .bh-badge-y { background: #000 !important; border: 1px solid #444; }
-
-    /* 2. Thẻ ƯU TIÊN (Mã khác GD): Màu VÀNG ĐẬM */
-    .qlbh-row-priority td { 
-        background-color: #ffecb3 !important; 
-        color: #5d4037 !important;
-        border-bottom: 1px solid #ffe082 !important;
-    }
-    .qlbh-row-priority strong { color: #795548 !important; }
-
-    /* 3. Thẻ CÒN HẠN DÀI: Màu XANH LÁ ĐẬM */
-    .qlbh-row-long-term td { 
-        background-color: #c8e6c9 !important; 
-        color: #1b5e20 !important;
-        border-bottom: 1px solid #a5d6a7 !important;
-    }
-    .qlbh-row-long-term strong { color: #2e7d32 !important; }
-
-    /* Hiệu ứng Hover để làm nổi bật dòng đang chọn */
-    .customer-table tr:hover td { 
-        filter: contrast(1.1) brightness(1.1); 
-        box-shadow: inset 0 0 5px rgba(0,0,0,0.2);
-    }
-
-
-
-
+            /* Hiệu ứng hover */
+            .customer-table tr:hover td { filter: brightness(95%); }
         </style>
+        
+        <script>
+        jQuery(document).ready(function($) {
+            // AJAX sửa ghi chú nhanh
+            $(document).on('click', '.qlbh-quick-note', function() {
+                let id = $(this).data('id');
+                let old = $(this).find('.note-content').text();
+                let note = prompt("Nhập ghi chú mới:", old === 'Trống' ? '' : old);
+                if (note !== null) {
+                    let container = $(this);
+                    container.css('opacity', '0.5');
+                    $.post(ajaxurl, { action: 'qlbh_update_note', id: id, note: note }, function(res) {
+                        container.css('opacity', '1');
+                        if(res.success) container.find('.note-content').text(note || 'Trống');
+                    });
+                }
+            });
+
+            // AJAX đổi trạng thái tái tục
+            $(document).on('change', '.qlbh-quick-status', function() {
+                let id = $(this).data('id');
+                let status = $(this).val();
+                let select = $(this);
+                select.css('opacity', '0.5');
+                $.post(ajaxurl, { action: 'qlbh_update_status', id: id, status: status }, function(res) {
+                    select.css('opacity', '1');
+                    if(res.success) location.reload();
+                });
+            });
+        });
+        </script>
         <?php
+    }
+
+    public static function ajax_update_status() {
+        global $wpdb;
+        $wpdb->update($wpdb->prefix.'bhyts', ['trangThaiTaiTuc' => sanitize_text_field($_POST['status'])], ['id' => intval($_POST['id'])]);
+        wp_send_json_success();
+    }
+
+    public static function ajax_update_note() {
+        global $wpdb;
+        $wpdb->update($wpdb->prefix.'bhyts', ['ghiChu' => sanitize_textarea_field($_POST['note'])], ['id' => intval($_POST['id'])]);
+        wp_send_json_success();
     }
 }

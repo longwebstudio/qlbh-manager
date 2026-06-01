@@ -1,214 +1,111 @@
 <?php
-if ( ! defined( 'ABSPATH' ) ) { exit; }
+/**
+ * File: admin/views/import.php
+ * Chức năng: Import JSON và lấy userId làm mã nhân viên chính thức
+ */
+
+if (!defined('ABSPATH')) exit;
 
 global $wpdb;
-$table_name = $wpdb->prefix . 'qlbh_khach_hang';
+$table_kh = $wpdb->prefix . 'bhyts';
+$table_ls = $wpdb->prefix . 'qlbh_lich_su_bh';
+$msg = '';
 
-$import_status = '';
-$success_count = 0;
-$exist_count   = 0;
-$error_count   = 0;
+if (isset($_POST['do_import'])) {
+    $raw = stripslashes($_POST['json_data']);
+    $data = json_decode($raw, true);
+    $type = $_POST['import_type']; 
 
-if ( isset( $_POST['qlbh_submit_import'] ) ) {
-    if ( wp_verify_nonce( $_POST['qlbh_import_nonce'], 'qlbh_import_action' ) ) {
-        $raw_json = isset( $_POST['qlbh_json_data'] ) ? trim( stripslashes( $_POST['qlbh_json_data'] ) ) : '';
-        
-        if ( ! empty( $raw_json ) ) {
-            $decoded_data = json_decode( $raw_json, true );
+    if (isset($data['items']) && is_array($data['items'])) {
+        $count = 0;
+        // Lấy mã của người đang đăng nhập để làm dự phòng (fallback)
+        $current_staff_id = qlbh_get_staff_official_id();
 
-            if ( json_last_error() === JSON_ERROR_NONE ) {
-                $items = array();
-                if ( isset( $decoded_data['items'] ) && is_array( $decoded_data['items'] ) ) {
-                    $items = $decoded_data['items'];
-                } elseif ( is_array( $decoded_data ) ) {
-                    $items = $decoded_data;
+        foreach ($data['items'] as $item) {
+            $maSo = sanitize_text_field($item['maSoBHXH']);
+            if (!$maSo) continue;
+
+            // XỬ LÝ LẤY MÃ NHÂN VIÊN TỪ JSON (userId)
+            // Nếu trong JSON có userId thì lấy, không thì lấy mã người đang đăng nhập
+            $staff_id_to_save = isset($item['userId']) ? sanitize_text_field($item['userId']) : $current_staff_id;
+
+            if ($type === 'renewal') {
+                /**
+                 * 1. IMPORT TÁI TỤC
+                 */
+                $wpdb->query($wpdb->prepare("
+                    INSERT INTO $table_kh (maSoBhxh, hoTen, ngaySinhDt, denNgayDt, soDienThoai, diaChiLh, bhytSoThang, bhytNhanVienThu) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %d, %s)
+                    ON DUPLICATE KEY UPDATE 
+                        denNgayDt = VALUES(denNgayDt), 
+                        soDienThoai = VALUES(soDienThoai),
+                        bhytNhanVienThu = VALUES(bhytNhanVienThu)
+                ", 
+                $maSo, 
+                $item['hoVaTen'], 
+                qlbh_sanitize_date_db($item['ngayThangNamSinh']), 
+                qlbh_sanitize_date_db($item['ngayDenHan']), 
+                $item['soDienThoai'], 
+                $item['diaChi'], 
+                $item['soThang'], 
+                $staff_id_to_save
+                ));
+                $count++;
+            } 
+            else {
+                /**
+                 * 2. GHI NHẬN ĐÓNG TIỀN (Chốt hồ sơ)
+                 */
+                $thuTuc = (isset($item['mathuTuc']) && $item['mathuTuc'] == 1) ? '603' : '602';
+                $ngayLap = isset($item['ngayLap']) ? substr($item['ngayLap'], 0, 10) : date('Y-m-d');
+                $tongTien = isset($item['tongTien']) ? floatval($item['tongTien']) : 0;
+                $bienLaiId = isset($item['bienLaiId']) ? sanitize_text_field($item['bienLaiId']) : '';
+
+                if ($thuTuc === '603') { // BHYT
+                    $wpdb->update($table_kh, [
+            'bhytThuTruoc'    => 0,
+            'userName'        => $userId,      // Lưu vào cột chính thức
+            'tongTien'        => $tongTien,    // Lưu vào cột tiền chính thức
+            'bhytNgayBienLai' => $ngayLap,
+            'bhytMaBienLai'   => $bienLaiId,
+            'bhytSoTienThuTruoc' => 0
+        ], ['maSoBhxh' => $maSo]);
+                } else { // BHXH (602)
+                    $wpdb->insert($table_ls, [
+                        'maSoBhxh'    => $maSo, 
+                        'loaiBh'      => 'bhxh', 
+                        'soTien'      => $tongTien,
+                        'ngayBienLai' => $ngayLap, 
+                        'maBienLai'   => $bienLaiId, 
+                        'isPending'   => 0, 
+                        'nhanVienThu' => $staff_id_to_save // Lưu userId từ JSON
+                    ]);
                 }
-
-                if ( ! empty( $items ) ) {
-                    foreach ( $items as $item ) {
-                        $is_portal_format = isset( $item['maSoBHXH'] ) && isset( $item['hoTen'] ) && isset( $item['ngaySinh'] );
-
-                        if ( $is_portal_format ) {
-                            $ma_so_bhxh   = sanitize_text_field( $item['maSoBHXH'] );
-                            $ho_ten       = sanitize_text_field( $item['hoTen'] );
-                            $ngay_sinh_raw= sanitize_text_field( $item['ngaySinh'] );
-                            $ngay_sinh    = qlbh_convert_import_date( $ngay_sinh_raw );
-                            $cccd         = isset( $item['cmnd'] ) ? sanitize_text_field( $item['cmnd'] ) : '';
-                            $so_dien_thoai = ''; 
-                            $ma_to_khai_rieng = isset( $item['soHoSo'] ) ? sanitize_text_field( $item['soHoSo'] ) : '';
-
-                            $bhyt_data = array();
-                            $bhxh_data = array();
-
-                            $ma_thu_tuc = isset( $item['mathuTuc'] ) ? intval( $item['mathuTuc'] ) : 1;
-
-                            if ( $ma_thu_tuc === 1 ) {
-                                $bhyt_ngay_bien_lai = null;
-                                if ( ! empty( $item['ngayLap'] ) ) {
-                                    $bhyt_ngay_bien_lai = date( 'Y-m-d', strtotime( $item['ngayLap'] ) );
-                                }
-                                $bhyt_ma_bien_lai = isset( $item['bienLaiId'] ) ? sanitize_text_field( $item['bienLaiId'] ) : '';
-                                $bhyt_so_tien     = isset( $item['tongTien'] ) ? floatval( $item['tongTien'] ) : 0.00;
-                                $bhyt_nv_ma_bhxh  = isset( $item['nguoiNop'] ) ? sanitize_text_field( $item['nguoiNop'] ) : '';
-
-                                $bhyt_tu_ngay      = $bhyt_ngay_bien_lai;
-                                $bhyt_ngay_het_han = null;
-                                if ( ! empty( $bhyt_tu_ngay ) ) {
-                                    $date = new DateTime( $bhyt_tu_ngay );
-                                    $date->modify( '+12 months' );
-                                    $date->modify( '-1 day' );
-                                    $bhyt_ngay_het_han = $date->format( 'Y-m-d' );
-                                }
-
-                                $bhyt_data = array(
-                                    'bhyt_ma_bien_lai'      => $bhyt_ma_bien_lai,
-                                    'bhyt_ngay_bien_lai'    => $bhyt_ngay_bien_lai,
-                                    'bhyt_so_tien'          => $bhyt_so_tien,
-                                    'bhyt_phuong_thuc_dong' => '12 tháng',
-                                    'bhyt_tu_ngay'          => $bhyt_tu_ngay,
-                                    'bhyt_den_ngay'         => $bhyt_ngay_het_han,
-                                    'bhyt_nhan_vien_thu'    => $bhyt_nv_ma_bhxh,
-                                );
-                            } elseif ( $ma_thu_tuc === 0 ) {
-                                $bhxh_ngay_bien_lai = null;
-                                if ( ! empty( $item['ngayLap'] ) ) {
-                                    $bhxh_ngay_bien_lai = date( 'Y-m-d', strtotime( $item['ngayLap'] ) );
-                                }
-                                $bhxh_ma_bien_lai = isset( $item['bienLaiId'] ) ? sanitize_text_field( $item['bienLaiId'] ) : '';
-                                $bhxh_so_tien     = isset( $item['tongTien'] ) ? floatval( $item['tongTien'] ) : 0.00;
-                                $bhxh_nv_ma_bhxh  = isset( $item['nguoiNop'] ) ? sanitize_text_field( $item['nguoiNop'] ) : '';
-                                $bhxh_phuong_thuc = isset( $item['ky'] ) ? 'Kỳ: ' . sanitize_text_field( $item['ky'] ) : '';
-
-                                $bhxh_ngay_het_han = null;
-                                if ( ! empty( $item['ky'] ) && preg_match( '/^([0-9]{2})\/([0-9]{4})$/', $item['ky'], $matches ) ) {
-                                    $month = intval( $matches[1] );
-                                    $year  = intval( $matches[2] );
-                                    $bhxh_ngay_het_han = date( 'Y-m-d', mktime( 0, 0, 0, $month + 1, 0, $year ) );
-                                }
-
-                                $bhxh_data = array(
-                                    'bhxh_ma_bien_lai'      => $bhxh_ma_bien_lai,
-                                    'bhxh_ngay_bien_lai'    => $bhxh_ngay_bien_lai,
-                                    'bhxh_so_tien'          => $bhxh_so_tien,
-                                    'bhxh_phuong_thuc_dong' => $bhxh_phuong_thuc,
-                                    'bhxh_den_ngay'         => $bhxh_ngay_het_han,
-                                    'bhxh_nhan_vien_thu'    => $bhxh_nv_ma_bhxh,
-                                );
-                            }
-
-                            if ( empty( $ma_so_bhxh ) || empty( $ho_ten ) || empty( $ngay_sinh ) ) {
-                                $error_count++;
-                                continue;
-                            }
-
-                            $exists_id = $wpdb->get_var( $wpdb->prepare( "SELECT id FROM $table_name WHERE ma_so_bhxh = %s", $ma_so_bhxh ) );
-
-                            if ( $exists_id ) {
-                                $update_fields = array(
-                                    'ho_ten'           => $ho_ten,
-                                    'ngay_sinh'        => $ngay_sinh,
-                                    'cccd'             => $cccd,
-                                    'ma_to_khai_rieng' => $ma_to_khai_rieng
-                                );
-
-                                if ( $ma_thu_tuc === 1 ) {
-                                    $update_fields = array_merge( $update_fields, $bhyt_data );
-                                } elseif ( $ma_thu_tuc === 0 ) {
-                                    $update_fields = array_merge( $update_fields, $bhxh_data );
-                                }
-
-                                $wpdb->update( $table_name, $update_fields, array( 'id' => $exists_id ) );
-                                $exist_count++;
-                            } else {
-                                $insert_fields = array(
-                                    'ma_so_bhxh'       => $ma_so_bhxh,
-                                    'ho_ten'           => $ho_ten,
-                                    'ngay_sinh'        => $ngay_sinh,
-                                    'cccd'             => $cccd,
-                                    'so_dien_thoai'    => $so_dien_thoai,
-                                    'ma_to_khai_rieng' => $ma_to_khai_rieng
-                                );
-
-                                if ( $ma_thu_tuc === 1 ) {
-                                    $insert_fields = array_merge( $insert_fields, $bhyt_data );
-                                } elseif ( $ma_thu_tuc === 0 ) {
-                                    $insert_fields = array_merge( $insert_fields, $bhxh_data );
-                                }
-
-                                $inserted = $wpdb->insert( $table_name, $insert_fields );
-                                if ( $inserted ) { $success_count++; } else { $error_count++; }
-                            }
-
-                        } else {
-                            $ma_so_bhxh    = isset( $item['maSoBHXH'] ) ? sanitize_text_field( $item['maSoBHXH'] ) : '';
-                            $ho_ten        = isset( $item['hoVaTen'] ) ? sanitize_text_field( $item['hoVaTen'] ) : '';
-                            $ngay_sinh_raw = isset( $item['ngayThangNamSinh'] ) ? sanitize_text_field( $item['ngayThangNamSinh'] ) : '';
-                            $ngay_sinh     = qlbh_convert_import_date( $ngay_sinh_raw );
-                            $cccd          = '';
-                            $so_dien_thoai = isset( $item['soDienThoai'] ) && ! empty( $item['soDienThoai'] ) ? sanitize_text_field( $item['soDienThoai'] ) : '';
-                            $dia_chi_lh    = isset( $item['diaChi'] ) ? sanitize_textarea_field( $item['diaChi'] ) : '';
-                            
-                            $ngay_het_han_raw  = isset( $item['ngayDenHan'] ) ? sanitize_text_field( $item['ngayDenHan'] ) : ( isset( $item['ngayDenHanStr'] ) ? sanitize_text_field( $item['ngayDenHanStr'] ) : '' );
-                            $bhyt_ngay_het_han = qlbh_convert_import_date( $ngay_het_han_raw );
-                            $bhyt_phuong_thuc  = isset( $item['soThang'] ) ? sanitize_text_field( $item['soThang'] ) . ' tháng' : '';
-                            $bhyt_so_tien      = isset( $item['soPhaiDong'] ) ? floatval( $item['soPhaiDong'] ) : 0.00;
-
-                            if ( empty( $ma_so_bhxh ) || empty( $ho_ten ) || empty( $ngay_sinh ) ) {
-                                $error_count++;
-                                continue;
-                            }
-
-                            $exists_id = $wpdb->get_var( $wpdb->prepare( "SELECT id FROM $table_name WHERE ma_so_bhxh = %s", $ma_so_bhxh ) );
-                            if ( $exists_id ) {
-                                $exist_count++;
-                                continue;
-                            }
-
-                            $inserted = $wpdb->insert(
-                                $table_name,
-                                array(
-                                    'ma_so_bhxh'            => $ma_so_bhxh,
-                                    'ho_ten'                => $ho_ten,
-                                    'ngay_sinh'             => $ngay_sinh,
-                                    'cccd'                  => $cccd,
-                                    'so_dien_thoai'         => $so_dien_thoai,
-                                    'dia_chi_lien_he'       => $dia_chi_lh,
-                                    'bhyt_den_ngay'         => $bhyt_ngay_het_han,
-                                    'bhyt_phuong_thuc_dong' => $bhyt_phuong_thuc,
-                                    'bhyt_so_tien'          => $bhyt_so_tien
-                                )
-                            );
-
-                            if ( $inserted ) { $success_count++; } else { $error_count++; }
-                        }
-                    }
-                    $import_status = 'success';
-                }
-            } else {
-                $import_status = 'error';
-                $error_message = 'Lỗi cú pháp JSON: ' . json_last_error_msg();
+                $count++;
             }
         }
+        $msg = "<div class='updated'><p>✅ Hệ thống đã xử lý xong <b>$count</b> hồ sơ. Mã nhân viên đã được đồng bộ theo trường <b>userId</b> trong JSON.</p></div>";
     }
 }
 ?>
-
 <div class="wrap qlbh-wrap">
-    <h1>Nhập dữ liệu JSON đồng bộ</h1>
-    <p class="description">Hệ thống đồng bộ tự động dựa theo mã thủ tục (mathuTuc: 1 lưu vào BHYT, 0 lưu vào BHXH).</p>
+    <h1>Import Dữ liệu & Đồng bộ Nhân viên</h1>
+    <?php echo $msg; ?>
     
-    <?php if ( $import_status === 'success' ) : ?>
-        <div class="notice notice-success is-dismissible">
-            <p><strong>Hoàn tất đồng bộ:</strong> Tạo mới: <strong><?php echo $success_count; ?></strong> | Cập nhật hồ sơ: <strong><?php echo $exist_count; ?></strong> | Lỗi: <strong><?php echo $error_count; ?></strong></p>
-        </div>
-    <?php endif; ?>
-
     <div class="qlbh-card">
-        <form method="post" action="">
-            <?php wp_nonce_field( 'qlbh_import_action', 'qlbh_import_nonce' ); ?>
-            <p><label for="qlbh_json_data"><strong>Nhập chuỗi JSON đồng bộ:</strong></label></p>
-            <textarea name="qlbh_json_data" id="qlbh_json_data" rows="12" class="large-text" required placeholder="Dán mã JSON đóng phí tại đây..."></textarea>
-            <p><input type="submit" name="qlbh_submit_import" class="button button-primary button-large" value="Đồng bộ ngay"></p>
+        <form method="post">
+            <p><b>1. Loại dữ liệu:</b></p>
+            <select name="import_type" style="width:100%; max-width:400px; height: 35px;">
+                <option value="renewal">Danh sách Tái tục</option>
+                <option value="payment">Ghi nhận đóng tiền</option>
+            </select>
+
+            <p><b>2. Dán mã JSON từ hệ thống BHXH:</b></p>
+            <textarea name="json_data" rows="15" style="width:100%; font-family:monospace; background:#f9f9f9;" placeholder="Dán chuỗi JSON có chứa trường userId..."></textarea>
+            
+            <p class="submit">
+                <input type="submit" name="do_import" class="button button-primary button-large" value="Bắt đầu Import & Chốt mã NV">
+            </p>
         </form>
     </div>
 </div>
